@@ -76,6 +76,17 @@ file_env() {
     unset "$fileVar"
 }
 
+# Decode base64 encoded strings if necessary
+decode_base64_if_needed() {
+    local var="$1"
+    local varValue="$2"
+    if echo "$varValue" | grep -q '^[A-Za-z0-9+/=]\{20,\}$'; then
+        export "$var"="$(echo "$varValue" | base64 -d)"
+    else
+        export "$var"="$varValue"
+    fi
+}
+
 if expr "$1" : "apache" 1>/dev/null; then
     if [ -n "${APACHE_DISABLE_REWRITE_IP+x}" ]; then
         a2disconf remoteip
@@ -217,6 +228,35 @@ if expr "$1" : "apache" 1>/dev/null || [ "$1" = "php-fpm" ] || [ "${NEXTCLOUD_UP
                         # shellcheck disable=SC2016
                         install_options=$install_options' --database pgsql --database-name "$POSTGRES_DB" --database-user "$POSTGRES_USER" --database-pass "$POSTGRES_PASSWORD" --database-host "$POSTGRES_HOST"'
                         install=true
+                    fi
+
+                    file_env MYSQL_SSL 0
+                    file_env MYSQL_CA
+                    file_env MYSQL_CERT
+                    file_env MYSQL_KEY
+                    file_env MYSQL_SSL_PATH /var/www/html/config/ssl
+
+                    # Decode base64 encoded strings if necessary
+                    decode_base64_if_needed MYSQL_CA "$MYSQL_CA"
+                    decode_base64_if_needed MYSQL_CERT "$MYSQL_CERT"
+                    decode_base64_if_needed MYSQL_KEY "$MYSQL_KEY"
+
+                    if [ -n "${MYSQL_SSL}" ] && [ "${MYSQL_SSL}" -eq 1 ]; then
+                        echo "Enabling SSL/TLS for MySQL/MariaDB connection"
+                        mkdir -p "${MYSQL_SSL_PATH}"
+                        if [ -n "${MYSQL_CA}" ]; then
+                            echo "${MYSQL_CA}" > "${MYSQL_SSL_PATH}/mysql-ca.pem"
+                            install_options=$install_options' --database-ssl-ca '"${MYSQL_SSL_PATH}/mysql-ca.pem"
+                        fi
+                        if [ -n "${MYSQL_CERT}" ] && [ -n "${MYSQL_KEY}" ]; then
+                            echo "Enabling mTLS for MySQL/MariaDB connection"
+                            echo "${MYSQL_CERT}" > "${MYSQL_SSL_PATH}/mysql-cert.pem"
+                            echo "${MYSQL_KEY}" > "${MYSQL_SSL_PATH}/mysql-key.pem"
+                            install_options=$install_options' --database-ssl-cert '"${MYSQL_SSL_PATH}/mysql-cert.pem"' --database-ssl-key '"${MYSQL_SSL_PATH}/mysql-key.pem"
+                        elif [ -n "${MYSQL_CERT}" ] || [ -n "${MYSQL_KEY}" ]; then
+                            echo >&2 "error: both MYSQL_CERT and MYSQL_KEY must be set for mTLS"
+                            exit 1
+                        fi
                     fi
 
                     if [ "$install" = true ]; then
